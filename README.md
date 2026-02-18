@@ -1,221 +1,240 @@
-# NovaFlow Ops
-**Turn natural-language tasks into verified browser actions with human approval + audit trails.**  
-Built for the **Amazon Nova AI Hackathon** using **Amazon Nova 2 Lite + Nova Multimodal Embeddings + Nova Act** (planned integration), with a working demo stack: **Next.js (web) + FastAPI (api)**.
+# NovaFlow Ops 🚦
+**Turn natural-language ops requests into verified browser actions with approvals and audit trails.**  
+Built for the **Amazon Nova AI Hackathon** on **Amazon Bedrock** using **Amazon Nova 2 Lite (planning)** + **Embeddings for BrandKit RAG** + **Nova Act-style deterministic UI actions** (with a reliable local Playwright executor for demo parity).
+
+> A practical agent system: **Plan → Retrieve Brand Context → Execute UI Steps → Capture Evidence → Audit Everything**.
 
 ---
 
-## 🚀 Elevator Pitch
-Small teams waste hours on repetitive “ops” work across web dashboards that often have limited APIs (posting updates, replying to reviews, updating settings, logging leads). **NovaFlow Ops** is an agentic assistant that doesn’t just suggest what to do. It **plans the workflow, requests human approval for sensitive steps, and produces an audit trail** so every action is explainable and reviewable.
+## 🏆 Hackathon Summary
+Modern teams waste time doing repetitive “ops” work inside web dashboards: replying to reviews, updating listings, posting announcements, logging leads, and clicking through UI flows that often have limited or no APIs.
+
+**NovaFlow Ops** takes a plain-English instruction and produces:
+- a **structured, deterministic plan** (JSON steps)
+- **brand-grounded output** (via BrandKit retrieval)
+- **browser actions** executed step-by-step with safety boundaries
+- a complete **audit trail** of what happened, when, and where
+
+This is agentic automation designed to be **trustworthy, explainable, and demo-ready**.
 
 ---
 
-## ✨ What it does
-NovaFlow Ops converts a plain-English request into a verified workflow:
+## ✨ Core Capabilities
+### 1) Natural-Language → Structured Plan (Nova 2 Lite)
+- Converts a task into **strict JSON**:
+  - `starting_url`
+  - `steps[]` (UI and non-UI)
+  - each step includes an `id`, `type`, `instruction`, and evidence intent
 
-1. **Plan & draft**  
-   Creates a step-by-step action plan and the text to publish (posts, replies, messages).
+### 2) BrandKit RAG (Embeddings + Retrieval)
+- Index internal docs (tone, policies, examples) into a searchable store
+- Retrieve **top-k relevant snippets** per task
+- Feed retrieved context into the planner to keep outputs **consistent and compliant**
 
-2. **Grounded knowledge (RAG) – planned**  
-   Uses **Nova Multimodal Embeddings** to index a **Brand Kit** (docs/policies/examples) so outputs stay consistent with internal tone and rules.
+### 3) Deterministic UI Execution (Nova Act-style actions)
+Steps are intentionally narrow and inspectable:
+- `CLICK_TEXT: ...`
+- `CLICK_CSS: ...`
+- `CLICK_ID: ...`
+- `TYPE_ID: field=value`
 
-3. **UI automation – planned**  
-   Uses **Nova Act** to execute browser actions (navigate, click, fill forms, submit) in a controlled way.
+This keeps automation safe and debuggable: the system never “freestyles” UI control outside the allowed instruction grammar.
 
-4. **Human-in-the-loop (HITL)**  
-   Before sensitive actions (publishing, editing settings), the agent pauses and requests approval.
+### 4) Human-in-the-loop approvals (HITL)
+- Steps can be flagged `requires_approval=true`
+- Execution pauses until approval is granted (UI-ready + API-ready)
 
-5. **Audit trail**  
-   Every step is logged with timestamps and artifacts so actions are explainable and reviewable.
+### 5) Audit Trail + Evidence
+Every run produces logs with timestamps and step results:
+- step executed / failed
+- final URL, page title
+- error tracebacks (on failures)
+- (optional) artifacts such as screenshots per step
 
 ---
 
-## 🧠 Why it matters (Impact)
-- **Community / SMB benefit:** reduces repetitive admin work and helps small teams move faster without needing API integrations for every tool.
-- **Safer automation:** approvals + audit trails make “agentic” workflows more trustworthy and enterprise-friendly.
-- **Brand consistency:** grounded generation reduces hallucinations and tone drift.
-
----
-
-## 🏗 Architecture
-**Monorepo layout**
+## 🧱 Architecture
+**Monorepo**
 novaflow-ops/
 apps/
-web/ # Next.js dashboard (task submission, run view, approval)
+web/ # Next.js UI (task submission, run viewer, approvals)
 services/
-api/ # FastAPI orchestrator (runs, steps, approval, audit)
-brand-kit/ # Example policies, tone, product facts (for RAG)
+api/ # FastAPI orchestrator (planner, RAG, runner, audit)
+brand-kit/ # Example BrandKit docs (tone/policy/examples)
+docker-compose.yml # Postgres for runs/logs
+scripts/ # Demo helpers (PowerShell)
 
 
-**Current demo flow (working locally)**
-- `POST /task` creates a run (`runId`) with steps and audit entries.
-- `GET /runs/{runId}` shows status, steps, logs.
-- `POST /runs/{runId}/approve` simulates HITL approval and completes execution (mock).
-
-**Planned Nova-backed flow**
-- **Nova 2 Lite**: planning, reasoning, copy generation
-- **Nova Multimodal Embeddings**: Brand Kit indexing + retrieval (RAG)
-- **Nova Act**: browser UI execution with deterministic boundaries
+**Runtime flow**
+1. **Index BrandKit** (embeddings)
+2. **Create task** → planner generates strict JSON plan
+3. **Run execution** step-by-step (with approvals if needed)
+4. **Persist logs + artifacts**
+5. **Review run** in UI or via API
 
 ---
 
-## 🧰 Tech Stack (Built With)
+## 🧰 Tech Stack
 **Frontend**
 - Next.js (App Router)
 - TypeScript
 - Tailwind CSS
 
 **Backend**
-- Python 3
-- FastAPI
-- Uvicorn
+- Python 3.10+
+- FastAPI + Uvicorn
+- SQLModel + Postgres
+- Playwright (stateful UI execution for deterministic demo)
 
-**Planned AWS / Nova**
-- Amazon Bedrock (Nova models)
-- Amazon Nova 2 Lite
-- Amazon Nova Multimodal Embeddings
-- Amazon Nova Act
-- (Optional) S3 for artifact storage, DynamoDB for run metadata, CloudWatch for logs
+**AWS / Nova (Bedrock)**
+- Amazon Nova 2 Lite (planning)
+- Embeddings (BrandKit indexing + retrieval)
+- Nova Act integration pattern (bounded UI action grammar)
 
 ---
 
 ## ✅ Requirements
 - Node.js 18+ (recommended 20)
 - Python 3.10+ (recommended 3.11)
-- npm (or pnpm/yarn if you adapt scripts)
+- Docker Desktop (Postgres)
+- AWS credentials (Bedrock access)  
+  If using AWS SSO: AWS CLI v2 configured with your profile
 
 ---
 
-## 🧪 Run Locally (Development)
-### 1) Clone repo
+## 🚀 Quickstart (Local, End-to-End)
+### 1) Clone
 
 git clone <YOUR_REPO_URL>
 cd novaflow-ops
-2) Start the API (FastAPI)
+2) Start Postgres
+docker compose up -d
+docker exec -it novaflow-postgres psql -U novaflow -d novaflow -c "select 1;"
+3) Configure API env
+Copy env example and fill in values:
+
+# Windows PowerShell
+Copy-Item services/api/.env.example services/api/.env
+If using AWS SSO:
+
+aws sso login --profile <YOUR_PROFILE>
+4) Run the API
 cd services/api
 python -m venv .venv
-# Windows Git Bash:
-source .venv/Scripts/activate
-# macOS/Linux:
-# source .venv/bin/activate
+
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
 
 pip install -U pip
-pip install fastapi uvicorn
+pip install -r requirements.txt
 
-uvicorn main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000
 API docs:
 
-Swagger UI: http://127.0.0.1:8000/docs
+Swagger: http://127.0.0.1:8000/docs
 
 Health: http://127.0.0.1:8000/health
 
-3) Start the Web App (Next.js)
-Open a new terminal:
-
+5) Run the Web UI (optional but recommended)
 cd apps/web
 npm install
-Create apps/web/.env.local:
-
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
-Run:
-
 npm run dev
 Web UI:
 
 http://localhost:3000
 
-🧭 Demo Walkthrough (2–3 minutes)
-Open the web UI at http://localhost:3000
+🎬 Demo Script (2–3 minutes, judge-friendly)
+A) Index BrandKit
+POST /brandkit/index
+Example docs:
 
-Enter a task like:
+demo site description
 
-“Reply to 3 reviews using our brand tone”
+credentials and expected success text
 
-“Post an update announcing our new feature”
+tone rules / do & don’t
 
-Click Create run
+B) Create a Run
+POST /task
+Use deterministic instructions to avoid UI flakiness:
 
-Observe:
+prefer CLICK_CSS: button[type="submit"] over text-based submit
 
-generated steps (plan → automation prep → approval → execution)
+C) Execute Steps (automatic)
+Run until DONE or ERROR:
 
-audit trail entries
+POST /runs/{run_id}/execute-first-ui-step
 
-Click Approve
+then repeat: POST /runs/{run_id}/execute-next-ui-step
 
-The run completes and the audit trail updates
+D) Verify Evidence / Logs
+GET /runs/{run_id}
+Show:
 
-This demonstrates: instruction → plan → approve → audit.
+executed step IDs
 
-🔌 API Reference
+final URLs (e.g. secure area)
+
+timestamps and audit messages
+
+🔌 API Overview
 Base URL: http://127.0.0.1:8000
 
 GET /health
-Returns { "ok": true }
+Returns provider, region, configured model IDs, DB status
+
+POST /brandkit/index
+Index BrandKit docs into embedding store
 
 POST /task
-Request:
+Create a run: retrieve context → plan JSON → persist run + logs
 
-{ "task": "Reply to 3 reviews using our brand tone" }
-Response:
+GET /runs/{run_id}
+Fetch run details and full audit log
 
-{ "runId": "demo-run-xxxxxx", "task": "..." }
-GET /runs/{runId}
-Returns run status, steps, and audit trail.
+POST /runs/{run_id}/execute-first-ui-step
+Execute first pending UI step
 
-POST /runs/{runId}/approve
-Approves sensitive step(s) and completes the run (demo/mock execution).
+POST /runs/{run_id}/execute-next-ui-step
+Execute next pending UI step (stateful Playwright session)
 
-🧱 Brand Kit (RAG-ready)
-Place internal tone guides, examples, and policies under:
+POST /runs/{run_id}/close-ui-session
+Cleanup UI session resources
 
-brand-kit/
-  tone.md
-  do-and-dont.md
-  product-faq.md
-  examples/
-Planned: index these docs with Nova Multimodal Embeddings for grounded generation.
+🔐 Safety, Security, and Reliability
+No secrets committed (.env is ignored, .env.example included)
 
-🔐 Security & Safety Considerations
-NovaFlow Ops is designed around trustworthy agentic automation:
+Bounded UI action grammar prevents “agent freestyle”
 
-Approval gates (HITL) for sensitive actions
+Stateful browser session per run (thread-safe executor)
 
-Restricted domains (planned) to reduce prompt injection during navigation
+Audit logs for every action
 
-Deterministic step boundaries + retries (planned) to improve UI automation reliability
+Strong defaults for stability:
 
-Audit trail to make actions explainable and reviewable
+use CSS selectors for submit buttons
 
-🧩 Roadmap (Post-Hackathon)
-Real Nova planning: replace mock plan with Nova 2 Lite via Bedrock
+timeouts + structured error reporting
 
-Brand Kit RAG: embeddings + retrieval for consistent “brand-safe” copy
+🧩 What makes this “agentic” (and not a toy)
+Planning is structured and validated (strict JSON)
 
-Nova Act execution: real browser automation + screenshots as artifacts
+Outputs are grounded via BrandKit retrieval
 
-Governance: roles, approvals, policy templates
+Actions are deterministic and inspectable
 
-Integrations: CRM/ticketing/e-commerce dashboards
+Execution is stepwise, approval-friendly, and fully logged
 
-Optional: voice commands with Nova Sonic for hands-free ops
+🏁 Submission Notes
+Built for the Amazon Nova AI Hackathon
 
-🎥 Video Demo (Submission)
-Target: ~3 minutes
+Demonstrates a complete loop: instruction → plan → execution → evidence → audit
 
-Must show the project functioning (create run → approve → audit trail)
-
-Include hashtag #AmazonNova
-
-No copyrighted music/trademarks without permission
+Includes hashtag: #AmazonNova
 
 📄 License
-MIT (or your preferred license).
-If you plan to keep it private during judging, remember to share access with:
-
-testing@devpost.com
-
-Amazon-Nova-hackathon@amazon.com
+MIT (or replace with your preferred license)
 
 🙌 Acknowledgements
-Built for the Amazon Nova AI Hackathon.
-Thanks to Amazon Nova and Bedrock tooling for enabling rapid agentic prototypes.
+Built for the Amazon Nova AI Hackathon using Amazon Bedrock + Nova models.
+Thanks to the Nova ecosystem for enabling rapid agentic prototypes with governance-friendly patterns.
