@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: novaflow-postgres
+    environment:
+      POSTGRES_USER: novaflow
+      POSTGRES_PASSWORD: novaflowpass
+      POSTGRES_DB: novaflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - novaflow_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novaflow -d novaflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  novaflow_pg:
