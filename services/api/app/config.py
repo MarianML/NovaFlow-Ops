@@ -33,7 +33,9 @@ def _env_bool(key: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     # ---- Provider selection ----
-    NOVA_PROVIDER: str = _env("NOVA_PROVIDER", "bedrock") or "bedrock"
+    # bedrock: real AWS Bedrock (Titan embeddings + Nova planner)
+    # mock: no AWS required, deterministic behavior for demos/judges
+    NOVA_PROVIDER: str = (_env("NOVA_PROVIDER", "bedrock") or "bedrock").strip().lower()
 
     # ---- AWS / Bedrock ----
     AWS_REGION: str = _env("AWS_REGION", _env("AWS_DEFAULT_REGION", "eu-north-1")) or "eu-north-1"
@@ -49,12 +51,15 @@ class Settings:
 
     # ---- Bedrock model IDs ----
     # Embeddings: Titan Text Embeddings v2 is widely available and supports 1024/512/256 dims.
-    NOVA_EMBED_MODEL_ID: str = _env("NOVA_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0") or "amazon.titan-embed-text-v2:0"
+    NOVA_EMBED_MODEL_ID: str = _env(
+        "NOVA_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0"
+    ) or "amazon.titan-embed-text-v2:0"
 
     # Planner/chat: Nova 2 Lite (region-agnostic model id).
-    # NOTE: in your logs you used "eu.amazon.nova-2-lite-v1:0" (region-prefixed).
-    # Either works depending on account/region access. Keep override via env.
-    NOVA_LITE_MODEL_ID: str = _env("NOVA_LITE_MODEL_ID", "amazon.nova-2-lite-v1:0") or "amazon.nova-2-lite-v1:0"
+    # NOTE: sometimes accounts use region-prefixed ids like eu.amazon...
+    NOVA_LITE_MODEL_ID: str = _env(
+        "NOVA_LITE_MODEL_ID", "amazon.nova-2-lite-v1:0"
+    ) or "amazon.nova-2-lite-v1:0"
 
     # ---- Database URLs (common aliases) ----
     DATABASE_URL: str | None = _env("DATABASE_URL")
@@ -62,7 +67,9 @@ class Settings:
     SQLALCHEMY_DATABASE_URI: str | None = _env("SQLALCHEMY_DATABASE_URI")
 
     # ---- Demo / misc ----
-    DEMO_STARTING_URL: str = _env("DEMO_STARTING_URL", "https://the-internet.herokuapp.com/") or "https://the-internet.herokuapp.com/"
+    DEMO_STARTING_URL: str = _env(
+        "DEMO_STARTING_URL", "https://the-internet.herokuapp.com/"
+    ) or "https://the-internet.herokuapp.com/"
     PLAYWRIGHT_HEADLESS: bool = _env_bool("PLAYWRIGHT_HEADLESS", default=True)
 
     @property
@@ -75,20 +82,37 @@ class Settings:
     def validate(self) -> None:
         """
         Validate critical configuration.
+
+        - Always requires DATABASE_URL (we store runs/logs/docs).
+        - Only requires AWS profile/model config sanity when provider=bedrock.
         """
-        if self.NOVA_PROVIDER != "bedrock":
-            raise RuntimeError("This setup expects NOVA_PROVIDER=bedrock (no API key provider).")
+        if self.NOVA_PROVIDER not in ("bedrock", "mock"):
+            raise RuntimeError("NOVA_PROVIDER must be 'bedrock' or 'mock'.")
 
         if not self.EFFECTIVE_DATABASE_URL:
             raise RuntimeError(
                 "DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL."
             )
 
+        # Bedrock-specific checks
+        if self.NOVA_PROVIDER == "bedrock":
+            # Not strictly required (could use env creds), but helpful for SSO setups.
+            # If you want to allow non-profile usage, you can remove this check.
+            if not self.BEDROCK_REGION:
+                raise RuntimeError("BEDROCK_REGION is not configured.")
+
+            if not self.NOVA_EMBED_MODEL_ID:
+                raise RuntimeError("NOVA_EMBED_MODEL_ID is not configured.")
+
+            if not self.NOVA_LITE_MODEL_ID:
+                raise RuntimeError("NOVA_LITE_MODEL_ID is not configured.")
+
 
 # Single settings instance (import this everywhere)
 settings = Settings()
 
 # Ensure boto3 loads AWS config/credentials from shared config files (required for many SSO setups).
+# Setting these in mock mode doesn't hurt, but you can conditionally set them if you want.
 os.environ.setdefault("AWS_SDK_LOAD_CONFIG", settings.AWS_SDK_LOAD_CONFIG)
 os.environ.setdefault("AWS_REGION", settings.AWS_REGION)
 os.environ.setdefault("AWS_DEFAULT_REGION", settings.AWS_DEFAULT_REGION)

@@ -4,7 +4,7 @@ import asyncio
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict
 import re
 from pathlib import Path
 from datetime import datetime
@@ -35,17 +35,20 @@ _SESSIONS: Dict[int, UISession] = {}
 
 def _parse_instruction(instruction: str) -> dict:
     """
-    Supported instructions:
-      - CLICK_TEXT: Something
-      - CLICK_ID: username
-      - CLICK_CSS: button[type="submit"]
-      - TYPE_ID: username=tomsmith
+    Supported instructions (Runner DSL):
 
-      Evidence / stability:
-      - WAIT_TEXT: You logged into a secure area!
-      - ASSERT_TEXT: You logged into a secure area!
-      - WAIT_URL_CONTAINS: /secure
-      - SCREENSHOT: after-login
+    Actions:
+      - CLICK_TEXT: <text>
+      - CLICK_ID: <id>
+      - CLICK_CSS: <css>
+      - TYPE_ID: <fieldId>=<value>
+
+    Evidence / stability:
+      - WAIT_TEXT: <text>
+      - ASSERT_TEXT: <text>
+      - WAIT_URL_CONTAINS: <fragment>
+      - WAIT_MS: <milliseconds>
+      - SCREENSHOT: <label>
     """
     instruction = (instruction or "").strip()
 
@@ -76,6 +79,10 @@ def _parse_instruction(instruction: str) -> dict:
     m = re.match(r"^WAIT_URL_CONTAINS:\s*(.+)$", instruction, flags=re.I)
     if m:
         return {"action": "wait_url_contains", "value": m.group(1).strip()}
+
+    m = re.match(r"^WAIT_MS:\s*(\d+)\s*$", instruction, flags=re.I)
+    if m:
+        return {"action": "wait_ms", "value": int(m.group(1))}
 
     m = re.match(r"^SCREENSHOT:\s*(.*)$", instruction, flags=re.I)
     if m:
@@ -173,48 +180,53 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
     timeout_click = 20000
     timeout_wait = 25000
 
-    if spec["action"] == "click_text":
+    action = spec["action"]
+
+    if action == "click_text":
         target = spec["value"]
         locator = page.get_by_text(target, exact=True)
         if locator.count() == 0:
             locator = page.get_by_text(target, exact=False)
         locator.first.click(timeout=timeout_click)
 
-    elif spec["action"] == "click_id":
+    elif action == "click_id":
         target = spec["value"]
         page.locator(f"#{target}").click(timeout=timeout_click)
 
-    elif spec["action"] == "click_css":
+    elif action == "click_css":
         css = spec["value"]
         page.locator(css).first.click(timeout=timeout_click)
 
-    elif spec["action"] == "type_id":
+    elif action == "type_id":
         field_id = spec["field_id"]
         value = spec["value"]
         locator = page.locator(f"#{field_id}")
         locator.wait_for(state="visible", timeout=timeout_wait)
         locator.fill(value, timeout=timeout_click)
 
-    elif spec["action"] == "wait_text":
+    elif action == "wait_text":
         target = spec["value"]
         locator = page.get_by_text(target, exact=False)
         locator.first.wait_for(state="visible", timeout=timeout_wait)
 
-    elif spec["action"] == "assert_text":
+    elif action == "assert_text":
+        # ASSERT_TEXT should fail if not present. Give a short grace wait.
         target = spec["value"]
         locator = page.get_by_text(target, exact=False)
-        if locator.count() == 0:
-            # Short grace period in case page is still updating
-            try:
-                locator.first.wait_for(state="visible", timeout=8000)
-            except Exception:
-                raise ValueError(f"ASSERT_TEXT failed: '{target}' not found on page.")
+        try:
+            locator.first.wait_for(state="visible", timeout=8000)
+        except Exception as e:
+            raise ValueError(f"ASSERT_TEXT failed: '{target}' not found/visible.") from e
 
-    elif spec["action"] == "wait_url_contains":
+    elif action == "wait_url_contains":
         frag = spec["value"]
         page.wait_for_url(f"**{frag}**", timeout=timeout_wait)
 
-    elif spec["action"] == "screenshot":
+    elif action == "wait_ms":
+        ms = int(spec["value"])
+        page.wait_for_timeout(ms)
+
+    elif action == "screenshot":
         label = spec["value"]
         abs_path, public_url = _artifact_paths(run_id, label)
         page.screenshot(path=str(abs_path), full_page=True)

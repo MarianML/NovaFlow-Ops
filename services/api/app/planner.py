@@ -25,6 +25,7 @@ CRITICAL: Runner DSL ONLY
   - WAIT_TEXT: <text>
   - ASSERT_TEXT: <text>
   - WAIT_URL_CONTAINS: <fragment>
+  - WAIT_MS: <milliseconds>
   - SCREENSHOT: <label>
 
 Rules:
@@ -32,12 +33,13 @@ Rules:
 - Keep steps deterministic and short (one action per step).
 - requires_approval MUST be false for all ui steps (demo mode).
 - starting_url MUST ALWAYS be exactly "https://the-internet.herokuapp.com/" (do not invent URLs).
+- If you are not sure what to do, prefer evidence steps (WAIT_TEXT / WAIT_URL_CONTAINS / SCREENSHOT).
 
 Demo guidance for the-internet.herokuapp.com Form Authentication:
 - The link text is exactly "Form Authentication"
 - The username input has id "username"
 - The password input has id "password"
-- The login button CSS is: button[type="submit"]
+- The login button CSS is: button[type="submit"
 - Success page contains text: "You logged into a secure area!"
 
 If the user task is about logging into Form Authentication, produce EXACTLY 6 UI steps:
@@ -49,8 +51,8 @@ S5 WAIT_TEXT: You logged into a secure area!
 S6 SCREENSHOT: after_login
 
 Otherwise:
-- Return EXACTLY 4 UI steps.
-- Use WAIT_TEXT / ASSERT_TEXT / SCREENSHOT as evidence steps when possible.
+- Return EXACTLY 4 UI steps (S1..S4).
+- Use WAIT_TEXT / ASSERT_TEXT / WAIT_URL_CONTAINS / SCREENSHOT to make outcomes verifiable.
 """
 
 
