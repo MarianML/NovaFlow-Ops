@@ -1,5 +1,15 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# ------------------------------------------------------------
+# Load .env reliably (works no matter where you run uvicorn from)
+# services/api/app/config.py -> parents[1] == services/api
+# ------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parents[1]  # -> .../services/api
+load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
 
 def _env(key: str, default: str | None = None) -> str | None:
@@ -30,7 +40,9 @@ class Settings:
     AWS_DEFAULT_REGION: str = _env("AWS_DEFAULT_REGION", "eu-north-1") or "eu-north-1"
 
     # If set, prefer it for the Bedrock runtime client region.
-    BEDROCK_REGION: str = _env("BEDROCK_REGION") or (_env("AWS_REGION") or _env("AWS_DEFAULT_REGION") or "eu-north-1")
+    BEDROCK_REGION: str = _env("BEDROCK_REGION") or (
+        _env("AWS_REGION") or _env("AWS_DEFAULT_REGION") or "eu-north-1"
+    )
 
     AWS_PROFILE: str | None = _env("AWS_PROFILE")
     AWS_SDK_LOAD_CONFIG: str = _env("AWS_SDK_LOAD_CONFIG", "1") or "1"
@@ -40,6 +52,8 @@ class Settings:
     NOVA_EMBED_MODEL_ID: str = _env("NOVA_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0") or "amazon.titan-embed-text-v2:0"
 
     # Planner/chat: Nova 2 Lite (region-agnostic model id).
+    # NOTE: in your logs you used "eu.amazon.nova-2-lite-v1:0" (region-prefixed).
+    # Either works depending on account/region access. Keep override via env.
     NOVA_LITE_MODEL_ID: str = _env("NOVA_LITE_MODEL_ID", "amazon.nova-2-lite-v1:0") or "amazon.nova-2-lite-v1:0"
 
     # ---- Database URLs (common aliases) ----
@@ -66,7 +80,9 @@ class Settings:
             raise RuntimeError("This setup expects NOVA_PROVIDER=bedrock (no API key provider).")
 
         if not self.EFFECTIVE_DATABASE_URL:
-            raise RuntimeError("DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL.")
+            raise RuntimeError(
+                "DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL."
+            )
 
 
 # Single settings instance (import this everywhere)

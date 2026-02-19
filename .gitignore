@@ -1,25 +1,26 @@
 # ----------------------------
-# OS / Editor junk
+# OS / Editor
 # ----------------------------
 .DS_Store
 Thumbs.db
 Desktop.ini
 
+# VS Code: ignore everything, keep only extensions recommendations
 .vscode/*
-!.vscode/settings.json
 !.vscode/extensions.json
 
 .idea/
 *.swp
 
 # ----------------------------
-# NEVER commit secrets
+# Secrets (NEVER commit)
 # ----------------------------
 .env
 .env.*
 !.env.example
 !.env.template
 
+# Per-app env examples allowed
 services/api/.env
 services/api/.env.*
 !services/api/.env.example
@@ -31,38 +32,16 @@ apps/web/.env.*
 # ----------------------------
 # Python
 # ----------------------------
+.venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 *.pyd
 *.so
 
-.venv/
-venv/
-env/
-services/api/.venv/
-
 # ----------------------------
-# Test / build caches
-# ----------------------------
-build/
-dist/
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-*.log
-
-# ----------------------------
-# Local DB files
-# ----------------------------
-*.db
-*.sqlite
-*.sqlite3
-
-# ----------------------------
-# Node
+# Node / Next
 # ----------------------------
 node_modules/
 .next/
@@ -82,7 +61,31 @@ test-results/
 ms-playwright/
 
 # ----------------------------
+# Runtime artifacts (your runs)
+# ----------------------------
+services/api/artifacts/
+services/api/artifacts/**
+
+# ----------------------------
+# Build / test caches
+# ----------------------------
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+
+# ----------------------------
+# Local DB files
+# ----------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# ----------------------------
 # Docker local data
 # ----------------------------
 docker-data/
-
