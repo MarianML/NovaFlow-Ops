@@ -50,10 +50,12 @@ class Settings:
     AWS_SDK_LOAD_CONFIG: str = _env("AWS_SDK_LOAD_CONFIG", "1") or "1"
 
     # ---- Bedrock model IDs ----
+    # Embeddings: Titan (RAG retrieval)
     NOVA_EMBED_MODEL_ID: str = _env(
         "NOVA_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0"
     ) or "amazon.titan-embed-text-v2:0"
 
+    # Planner: Nova 2 Lite (reasoning + plan)
     NOVA_LITE_MODEL_ID: str = _env(
         "NOVA_LITE_MODEL_ID", "amazon.nova-2-lite-v1:0"
     ) or "amazon.nova-2-lite-v1:0"
@@ -70,6 +72,7 @@ class Settings:
     DEMO_STARTING_URL: str = _env(
         "DEMO_STARTING_URL", "https://the-internet.herokuapp.com/"
     ) or "https://the-internet.herokuapp.com/"
+
     PLAYWRIGHT_HEADLESS: bool = _env_bool("PLAYWRIGHT_HEADLESS", default=True)
 
     # ---- Starting URL policy ----
@@ -83,6 +86,13 @@ class Settings:
         "ALLOWED_STARTING_HOSTS",
         "the-internet.herokuapp.com",
     ) or "the-internet.herokuapp.com"
+
+    # ---- Optional DNS SSRF protection ----
+    # If enabled, hostnames will be DNS-resolved and blocked if they resolve to private/loopback/link-local IPs.
+    ENABLE_DNS_SSRF_PROTECTION: bool = _env_bool("ENABLE_DNS_SSRF_PROTECTION", default=False)
+
+    # DNS resolve timeout (seconds)
+    DNS_RESOLVE_TIMEOUT_S: float = float(_env("DNS_RESOLVE_TIMEOUT_S", "1.5") or "1.5")
 
     @property
     def ALLOWED_STARTING_HOSTS_LIST(self) -> list[str]:
@@ -104,15 +114,16 @@ class Settings:
             raise RuntimeError("NOVA_PROVIDER must be 'bedrock' or 'mock'.")
 
         if not self.EFFECTIVE_DATABASE_URL:
-            raise RuntimeError(
-                "DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL."
-            )
+            raise RuntimeError("DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL.")
 
         if self.STARTING_URL_MODE not in ("demo", "plan", "any_public"):
             raise RuntimeError("STARTING_URL_MODE must be one of: demo, plan, any_public.")
 
         if self.STARTING_URL_MODE == "plan" and not self.ALLOWED_STARTING_HOSTS_LIST:
             raise RuntimeError("ALLOWED_STARTING_HOSTS must not be empty when STARTING_URL_MODE=plan.")
+
+        if self.DNS_RESOLVE_TIMEOUT_S <= 0:
+            raise RuntimeError("DNS_RESOLVE_TIMEOUT_S must be > 0.")
 
         if self.NOVA_PROVIDER == "bedrock":
             if not self.BEDROCK_REGION:

@@ -1,1 +1,3 @@
-Tone: professional, friendly, concise. Avoid jargon. Be helpful and respectful.
+# Tone
+
+professional, friendly, concise. Avoid jargon. Be helpful and respectful.

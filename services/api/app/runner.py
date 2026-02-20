@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import re
+import socket
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict
-import re
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Dict
+from urllib.parse import urlparse
 
 from .config import settings
 from .url_utils import sanitize_http_url
@@ -17,7 +20,7 @@ from .url_utils import sanitize_http_url
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 
 @dataclass
@@ -115,11 +118,88 @@ def _artifact_paths(run_id: int, label: str) -> tuple[Path, str]:
     return abs_path, public_url
 
 
+def _is_blocked_ip(ip: str) -> bool:
+    """
+    Block loopback, private, link-local, multicast, unspecified, and reserved ranges.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True  # invalid IP -> treat as blocked for safety
+
+    return (
+        addr.is_loopback
+        or addr.is_private
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_unspecified
+        or addr.is_reserved
+    )
+
+
+def _resolve_hostname_block_if_private(hostname: str) -> None:
+    """
+    Optional "senior" SSRF hardening:
+    A domain can DNS-resolve to 127.0.0.1 or private ranges.
+    If ENABLE_DNS_SSRF_PROTECTION is enabled, block those.
+    """
+    if not settings.ENABLE_DNS_SSRF_PROTECTION:
+        return
+
+    # Best-effort resolve with a short timeout.
+    original_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(settings.DNS_RESOLVE_TIMEOUT_S)
+    try:
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            # If it doesn't resolve, let the browser fail normally.
+            return
+
+        for info in infos:
+            ip = info[4][0]
+            if _is_blocked_ip(ip):
+                raise ValueError(f"Blocked hostname '{hostname}' (DNS resolves to private/loopback IP {ip}).")
+    finally:
+        socket.setdefaulttimeout(original_timeout)
+
+
+def _validate_public_http_url(url: str) -> None:
+    """
+    Validate URL is http/https and not targeting localhost/private IPs.
+    Also optionally DNS-resolves hostnames to block private/loopback targets.
+    """
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        raise ValueError("Only http/https URLs are allowed.")
+
+    host = (p.hostname or "").strip().lower()
+    if not host:
+        raise ValueError("URL hostname is missing.")
+
+    # Obvious local hostnames
+    if host in ("localhost", "localhost.localdomain"):
+        raise ValueError("Blocked hostname: localhost")
+
+    # If literal IP -> block private/loopback/etc
+    try:
+        ipaddress.ip_address(host)
+        if _is_blocked_ip(host):
+            raise ValueError(f"Blocked IP: {host}")
+        return
+    except ValueError:
+        # Not a literal IP -> can be a domain (or invalid).
+        pass
+
+    # DNS SSRF hardening (optional)
+    _resolve_hostname_block_if_private(host)
+
+
 def _safe_starting_url(starting_url: str) -> str:
     """
-    Double-candado:
-    - Sanitiza http/https
-    - Si es inválida, cae a DEMO_STARTING_URL
+    Double lock:
+    - Sanitize http/https
+    - If invalid, fall back to DEMO_STARTING_URL
     """
     safe = sanitize_http_url(starting_url or "")
     if safe:
@@ -138,11 +218,14 @@ def _get_or_create_session(run_id: int, starting_url: str) -> UISession:
     """
     safe_url = _safe_starting_url(starting_url)
 
+    # If you ever allow arbitrary URLs, validate them as public.
+    # (In demo mode, you probably always start from DEMO_STARTING_URL anyway.)
+    _validate_public_http_url(safe_url)
+
     sess = _SESSIONS.get(run_id)
     if sess is not None:
         sess.last_used_at = time.time()
-        # Si por algún bug te pasan otra URL en el mismo run_id, NO re-navegamos a lo loco.
-        # Mantener estado > “sorpresa, te mandé a otra web”.
+        # Do NOT re-navigate on the same run_id if a different URL slips in.
         return sess
 
     pw = sync_playwright().start()
@@ -191,7 +274,6 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
     Execute ONE UI step using a persistent session.
     Returns a small result payload for logging.
     """
-    # starting_url llega ya sanitizada desde main.py, pero aquí la volvemos a sanear por seguridad.
     safe_url = _safe_starting_url(starting_url)
 
     sess = _get_or_create_session(run_id, safe_url)
@@ -199,7 +281,7 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
 
     spec = _parse_instruction(instruction)
 
-    # Small delay for stability (demo sites load fast, but still)
+    # Small delay for stability
     page.wait_for_timeout(250)
 
     timeout_click = 20000
