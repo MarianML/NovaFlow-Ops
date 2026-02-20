@@ -1,8 +1,43 @@
 @import "tailwindcss";
 
+/* Tokens base */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg0: #ffffff;
+  --bg1: #f5f7ff;
+  --text: #0b1020;
+  --muted: rgba(11, 16, 32, 0.65);
+
+  --card: rgba(255, 255, 255, 0.72);
+  --stroke: rgba(11, 16, 32, 0.12);
+
+  /* Slightly more saturated accents (still elegant) */
+  --primary0: #6d28d9; /* a bit deeper than #7c3aed */
+  --primary1: #38bdf8; /* a bit more vivid than #60a5fa */
+
+  --danger0: #ef4444;
+  --danger1: #fb7185;
+
+  --shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg0: #0b1020;
+    --bg1: #0f1630;
+    --text: rgba(255, 255, 255, 0.92);
+    --muted: rgba(255, 255, 255, 0.66);
+
+    --card: rgba(255, 255, 255, 0.08);
+    --stroke: rgba(255, 255, 255, 0.14);
+
+    --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* Next theme vars */
+:root {
+  --background: var(--bg0);
+  --foreground: var(--text);
 }
 
 @theme inline {
@@ -12,15 +47,200 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* --- Background: render as a single fixed layer to avoid GPU tile seams --- */
+html,
+body {
+  height: 100%;
+}
+
+html {
+  /* Keep a clean base color */
+  background: linear-gradient(180deg, var(--bg0), var(--bg1));
 }
 
 body {
-  background: var(--background);
+  position: relative;
+  background: transparent;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
+
+/* One fixed layer = no vertical/horizontal “cuts” */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+
+  /* Same colors you already use, just with alpha + smoother stops to blend */
+  background:
+    radial-gradient(
+      2400px 1280px at 10% 45%,
+      rgba(88, 57, 173, 0.55) 0%,
+      rgba(88, 57, 173, 0.22) 45%,
+      transparent 72%
+    ),
+    radial-gradient(
+      2400px 1280px at 90% 45%,
+      rgba(40, 166, 201, 0.50) 0%,
+      rgba(40, 166, 201, 0.20) 45%,
+      transparent 72%
+    ),
+    radial-gradient(
+      900px 520px at 52% 118%,
+      rgba(255, 255, 255, 0.5),
+      transparent 62%
+    ),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+
+  /* These two help the GPU stop doing “seams” */
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* Make sure the grid overlay sits above the background layer */
+@layer components {
+  .bg-grid::before {
+    z-index: -1;
+  }
+
+  .card-glass {
+    border-radius: 18px;
+    padding: 18px;
+    background: linear-gradient(180deg, var(--card), color-mix(in oklab, var(--card) 70%, transparent));
+    border: 1px solid var(--stroke);
+    box-shadow: var(--shadow);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--stroke);
+    background: color-mix(in oklab, var(--card) 75%, transparent);
+    color: var(--muted);
+    font-size: 13px;
+    box-shadow: 0 10px 25px rgba(0,0,0,.18);
+  }
+
+  .input-pro {
+    width: 100%;
+    border-radius: 14px;
+    border: 1px solid rgba(11, 16, 32, 0.10);
+    background: rgba(0, 0, 0, 0.14);
+    padding: 14px;
+    outline: none;
+    line-height: 1.45;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  }
+
+  .input-pro:focus {
+    border-color: var(--primary1);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.12),
+      0 0 0 4px rgba(56, 189, 248, 0.18);
+  }
+
+  /* 3D buttons */
+  .btn3d {
+    position: relative;
+    border: 0;
+    cursor: pointer;
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-weight: 650;
+    color: rgba(255,255,255,.94);
+    transition: transform .08s ease, filter .15s ease, box-shadow .15s ease, opacity .15s ease;
+    -webkit-user-select: none;
+    user-select: none;
+    will-change: transform;
+  }
+
+  .btn3d::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+    pointer-events: none;
+  }
+
+  .btn3d:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+
+  .btn3d:hover { filter: brightness(1.05); }
+
+  .btn3d:active {
+    transform: translateY(6px);
+    box-shadow: 0 6px 16px rgba(0,0,0,.25);
+  }
+
+  .btn3d-primary {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.06)),
+      linear-gradient(90deg, var(--primary0), var(--primary1));
+    box-shadow:
+      0 14px 30px rgba(109, 40, 217, 0.18),
+      0 9px 0 rgba(0,0,0,.35);
+  }
+
+  .btn3d-ghost {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.06)),
+      linear-gradient(90deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
+    border: 1px solid rgba(11, 16, 32, 0.15);
+    color: rgba(11, 16, 32, 0.88);
+    box-shadow:
+      0 12px 22px rgba(0,0,0,.20),
+      0 8px 0 rgba(0,0,0,.25);
+  }
+
+  .btn3d-danger {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.06)),
+      linear-gradient(90deg, var(--danger0), var(--danger1));
+    box-shadow:
+      0 14px 30px rgba(239,68,68,.18),
+      0 9px 0 rgba(0,0,0,.35);
+  }
+
+  .artifacts {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px;
+    border-radius: 16px;
+    border: 1px solid var(--stroke);
+    background: color-mix(in oklab, var(--card) 70%, transparent);
+  }
+
+  .thumb {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 260px;
+  }
+
+  .thumb img {
+    width: 96px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid var(--stroke);
+    background: rgba(0,0,0,.18);
+  }
+
+  .muted { color: var(--muted); }
 }

@@ -30,7 +30,9 @@ NovaFlow Ops will:
 - **Evidence artifacts** (screenshots) served via `/artifacts/...`
 - **Provider switch**:
   - `NOVA_PROVIDER=mock` → no AWS needed (deterministic local embeddings + deterministic planner)
-  - `NOVA_PROVIDER=bedrock` → real AWS Bedrock (Titan embeddings + Nova planner)
+  - `NOVA_PROVIDER=bedrock` → real AWS Bedrock (**Titan embeddings** + **Nova 2 Lite planner**)
+
+> Note: Embeddings are Titan by default. Planning is powered by Nova (Nova 2 Lite). This is intentional: Titan is used for RAG retrieval, while Nova is the reasoning/planning core.
 
 ---
 
@@ -61,9 +63,19 @@ UI steps MUST use exactly one of these commands:
 - `WAIT_TEXT: <text>`
 - `ASSERT_TEXT: <text>`
 - `WAIT_URL_CONTAINS: <fragment>`
+- `WAIT_MS: <milliseconds>`
 - `SCREENSHOT: <label>`
 
 Anything outside this list is not guaranteed to run.
+
+---
+
+## Demo safety note (important)
+
+For stability and safety in demos, the UI runner starts from `DEMO_STARTING_URL` (configured via env).
+If your task contains a different URL, the planner may reference it, but the runner may still start from the demo URL depending on server configuration.
+
+Recommended for reliable demos: use tasks that target the configured demo site (default: `https://the-internet.herokuapp.com/`).
 
 ---
 
@@ -75,45 +87,80 @@ Anything outside this list is not guaranteed to run.
 - Node.js 18+
 - Python 3.11+
 
+## One-command dev
+
+Windows (PowerShell):
+.\scripts\dev.ps1
+
 ### 1) Start Postgres
 
 From repo root:
 
+```bash
 docker compose up -d
+Default compose maps Postgres to port 5433 to avoid conflicts with local Postgres installs.
+
 2) Backend (API)
 Create and activate the venv from repo root:
 
 Windows (PowerShell)
+
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r services/api/requirements.txt
 python -m playwright install chromium
 macOS/Linux
+
 python -m venv .venv
 source .venv/bin/activate
 pip install -r services/api/requirements.txt
 python -m playwright install chromium
+Create services/api/.env (DO NOT commit):
+
+# ----------------------------
+# Database (Postgres)
+# ----------------------------
+DATABASE_URL=postgresql+asyncpg://novaflow:novaflowpass@localhost:5433/novaflow
+
+# ----------------------------
+# Provider selection
+# ----------------------------
+NOVA_PROVIDER=mock
+
+# ----------------------------
+# Demo site for UI automation
+# ----------------------------
+DEMO_STARTING_URL=https://the-internet.herokuapp.com/
+
+# ----------------------------
+# Playwright
+# ----------------------------
+PLAYWRIGHT_HEADLESS=true
+
+# ----------------------------
+# CORS
+# ----------------------------
+# Comma-separated list
+CORS_ORIGINS=http://localhost:3000
 Run the API:
 
 uvicorn services.api.app.main:app --reload --port 8000
 3) Frontend (Web UI)
 cd apps/web
 npm install
-npm run dev
-Open:
-
-Web UI: <http://localhost:3000>
-
-API Docs: <http://localhost:8000/docs>
-
-Health: <http://localhost:8000/health>
-
-Configuration
-Frontend API base URL
 Create apps/web/.env.local:
 
 NEXT_PUBLIC_API_URL=http://localhost:8000
-Restart the Next dev server after changing env vars.
+Run:
+
+npm run dev
+Open:
+
+Web UI: http://localhost:3000
+
+API Docs: http://localhost:8000/docs
+
+Health: http://localhost:8000/health
 
 Provider Modes
 NovaFlow Ops supports two providers controlled by NOVA_PROVIDER.
@@ -122,27 +169,19 @@ Option A: Mock provider (no AWS)
 Set:
 
 NOVA_PROVIDER=mock
+Mock mode uses deterministic local embeddings and a deterministic planner.
+Useful for local development and environments without AWS credentials.
 
-Mock mode uses deterministic local embeddings and a deterministic planner. It is useful for local development and environments without AWS credentials.
+Run:
 
-Windows (PowerShell)
-$env:NOVA_PROVIDER="mock"
-uvicorn services.api.app.main:app --reload --port 8000
-macOS/Linux
-export NOVA_PROVIDER=mock
 uvicorn services.api.app.main:app --reload --port 8000
 Option B: AWS Bedrock provider
 Set:
 
 NOVA_PROVIDER=bedrock
+Create/update services/api/.env:
 
-AWS region/profile variables
-
-Bedrock model IDs
-
-Create services/api/.env (DO NOT commit):
-
-DATABASE_URL=postgresql+asyncpg://novaflow:novaflowpass@localhost:5432/novaflow
+DATABASE_URL=postgresql+asyncpg://novaflow:novaflowpass@localhost:5433/novaflow
 
 NOVA_PROVIDER=bedrock
 
@@ -151,16 +190,24 @@ AWS_REGION=eu-north-1
 AWS_DEFAULT_REGION=eu-north-1
 BEDROCK_REGION=eu-north-1
 
+# Embeddings: Titan (RAG)
 NOVA_EMBED_MODEL_ID=amazon.titan-embed-text-v2:0
+
+# Planner: Nova 2 Lite
+# Some accounts/regions require a region-prefixed model id like eu.amazon...
 NOVA_LITE_MODEL_ID=amazon.nova-2-lite-v1:0
+# NOVA_LITE_MODEL_ID=eu.amazon.nova-2-lite-v1:0
 
 DEMO_STARTING_URL=https://the-internet.herokuapp.com/
 PLAYWRIGHT_HEADLESS=true
+
+# CORS
+CORS_ORIGINS=http://localhost:3000
 If using AWS SSO:
 
 aws sso login --profile novaflow
 aws sts get-caller-identity --profile novaflow
-Then run API:
+Then run:
 
 uvicorn services.api.app.main:app --reload --port 8000
 Index the Brand Kit (RAG)
@@ -177,7 +224,11 @@ $payload = @{ docs=$docs; embedding_dimension=1024 } | ConvertTo-Json -Depth 10
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/brandkit/index -ContentType "application/json" -Body $payload
 Run a task
 From the Web UI
-Paste a task into the UI and click Run.
+Paste a task into the UI and click Create run, then Execute next UI step.
+
+Recommended demo task:
+
+Go to Form Authentication, login with tomsmith / SuperSecretPassword!, verify success text, then take a screenshot.
 
 Execute steps via API (optional)
 PowerShell example:
@@ -189,7 +240,9 @@ Evidence:
 
 Inspect screenshot_url in the run logs.
 
-Open: http://localhost:8000<SCREENSHOT_URL>
+Open:
+
+http://localhost:8000<SCREENSHOT_URL>
 
 API endpoints
 GET /health — provider + model IDs + DB status
@@ -210,8 +263,8 @@ Troubleshooting
 AWS token / SSO errors
 If you see errors like “SSO session expired”:
 
-aws sso login --profile <profile>
-aws sts get-caller-identity --profile <profile>
+aws sso login --profile YOUR_PROFILE
+aws sts get-caller-identity --profile YOUR_PROFILE
 DB not ready / connection errors
 docker compose ps
 docker compose logs -f postgres
@@ -221,19 +274,19 @@ Web UI stuck loading
 Confirm API is running on http://localhost:8000
 
 Confirm apps/web/.env.local contains:
-NEXT_PUBLIC_API_URL=http://localhost:8000
 
+NEXT_PUBLIC_API_URL=http://localhost:8000
 Restart Next dev server after changing env vars.
 
 CORS issues
-Backend must allow http://localhost:3000 (configure CORS in the API).
+Ensure backend CORS allows the frontend origin (configured via CORS_ORIGINS in services/api/.env).
 
 Security notes
 Never commit .env files containing secrets.
 
 Screenshots/logs are stored locally under services/api/artifacts/... and exposed via /artifacts/....
 
-Keep artifact folders ignored in git.
+Keep artifacts folders ignored in git.
 
 License
 MIT License. See LICENSE.

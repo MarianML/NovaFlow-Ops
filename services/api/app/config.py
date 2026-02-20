@@ -34,7 +34,7 @@ def _env_bool(key: str, default: bool = False) -> bool:
 class Settings:
     # ---- Provider selection ----
     # bedrock: real AWS Bedrock (Titan embeddings + Nova planner)
-    # mock: no AWS required, deterministic behavior for demos/judges
+    # mock: no AWS required, deterministic behavior for demos
     NOVA_PROVIDER: str = (_env("NOVA_PROVIDER", "bedrock") or "bedrock").strip().lower()
 
     # ---- AWS / Bedrock ----
@@ -50,16 +50,16 @@ class Settings:
     AWS_SDK_LOAD_CONFIG: str = _env("AWS_SDK_LOAD_CONFIG", "1") or "1"
 
     # ---- Bedrock model IDs ----
-    # Embeddings: Titan Text Embeddings v2 is widely available and supports 1024/512/256 dims.
     NOVA_EMBED_MODEL_ID: str = _env(
         "NOVA_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0"
     ) or "amazon.titan-embed-text-v2:0"
 
-    # Planner/chat: Nova 2 Lite (region-agnostic model id).
-    # NOTE: sometimes accounts use region-prefixed ids like eu.amazon...
     NOVA_LITE_MODEL_ID: str = _env(
         "NOVA_LITE_MODEL_ID", "amazon.nova-2-lite-v1:0"
     ) or "amazon.nova-2-lite-v1:0"
+
+    # Optional: inference profile ARN/ID for Nova if required by your account/region.
+    NOVA_INFERENCE_PROFILE_ID: str | None = _env("NOVA_INFERENCE_PROFILE_ID")
 
     # ---- Database URLs (common aliases) ----
     DATABASE_URL: str | None = _env("DATABASE_URL")
@@ -72,20 +72,34 @@ class Settings:
     ) or "https://the-internet.herokuapp.com/"
     PLAYWRIGHT_HEADLESS: bool = _env_bool("PLAYWRIGHT_HEADLESS", default=True)
 
+    # ---- Starting URL policy ----
+    # demo: always use DEMO_STARTING_URL
+    # plan: use planner's starting_url only if host is in allowlist
+    # any_public: accept any public http/https URL (blocks localhost/private IPs in server logic)
+    STARTING_URL_MODE: str = (_env("STARTING_URL_MODE", "demo") or "demo").strip().lower()
+
+    # Comma-separated allowlist of hostnames (used when STARTING_URL_MODE=plan)
+    ALLOWED_STARTING_HOSTS: str = _env(
+        "ALLOWED_STARTING_HOSTS",
+        "the-internet.herokuapp.com",
+    ) or "the-internet.herokuapp.com"
+
+    @property
+    def ALLOWED_STARTING_HOSTS_LIST(self) -> list[str]:
+        return [h.strip().lower() for h in (self.ALLOWED_STARTING_HOSTS or "").split(",") if h.strip()]
+
+    # ---- CORS ----
+    CORS_ORIGINS: str = _env("CORS_ORIGINS", "http://localhost:3000") or "http://localhost:3000"
+
+    @property
+    def CORS_ORIGINS_LIST(self) -> list[str]:
+        return [o.strip() for o in (self.CORS_ORIGINS or "").split(",") if o.strip()]
+
     @property
     def EFFECTIVE_DATABASE_URL(self) -> str | None:
-        """
-        Choose the first available DB URL among common environment variable names.
-        """
         return self.DATABASE_URL or self.DB_URL or self.SQLALCHEMY_DATABASE_URI
 
     def validate(self) -> None:
-        """
-        Validate critical configuration.
-
-        - Always requires DATABASE_URL (we store runs/logs/docs).
-        - Only requires AWS profile/model config sanity when provider=bedrock.
-        """
         if self.NOVA_PROVIDER not in ("bedrock", "mock"):
             raise RuntimeError("NOVA_PROVIDER must be 'bedrock' or 'mock'.")
 
@@ -94,25 +108,24 @@ class Settings:
                 "DATABASE_URL is not configured. Set DATABASE_URL to a PostgreSQL asyncpg URL."
             )
 
-        # Bedrock-specific checks
+        if self.STARTING_URL_MODE not in ("demo", "plan", "any_public"):
+            raise RuntimeError("STARTING_URL_MODE must be one of: demo, plan, any_public.")
+
+        if self.STARTING_URL_MODE == "plan" and not self.ALLOWED_STARTING_HOSTS_LIST:
+            raise RuntimeError("ALLOWED_STARTING_HOSTS must not be empty when STARTING_URL_MODE=plan.")
+
         if self.NOVA_PROVIDER == "bedrock":
-            # Not strictly required (could use env creds), but helpful for SSO setups.
-            # If you want to allow non-profile usage, you can remove this check.
             if not self.BEDROCK_REGION:
                 raise RuntimeError("BEDROCK_REGION is not configured.")
-
             if not self.NOVA_EMBED_MODEL_ID:
                 raise RuntimeError("NOVA_EMBED_MODEL_ID is not configured.")
+            if not self.NOVA_LITE_MODEL_ID and not self.NOVA_INFERENCE_PROFILE_ID:
+                raise RuntimeError("NOVA_LITE_MODEL_ID (or NOVA_INFERENCE_PROFILE_ID) is not configured.")
 
-            if not self.NOVA_LITE_MODEL_ID:
-                raise RuntimeError("NOVA_LITE_MODEL_ID is not configured.")
 
-
-# Single settings instance (import this everywhere)
 settings = Settings()
 
 # Ensure boto3 loads AWS config/credentials from shared config files (required for many SSO setups).
-# Setting these in mock mode doesn't hurt, but you can conditionally set them if you want.
 os.environ.setdefault("AWS_SDK_LOAD_CONFIG", settings.AWS_SDK_LOAD_CONFIG)
 os.environ.setdefault("AWS_REGION", settings.AWS_REGION)
 os.environ.setdefault("AWS_DEFAULT_REGION", settings.AWS_DEFAULT_REGION)

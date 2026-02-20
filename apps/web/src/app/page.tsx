@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
 
 type UiError = { error: string };
 
@@ -41,10 +42,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function isApiOkResponse(v: unknown): v is ApiOkResponse {
   return (
-    isRecord(v) &&
-    typeof v.run_id === "number" &&
-    "plan" in v &&
-    "ctx" in v
+    isRecord(v) && typeof v.run_id === "number" && "plan" in v && "ctx" in v
   );
 }
 
@@ -53,7 +51,7 @@ function isExecuteStepOkResponse(v: unknown): v is ExecuteStepOkResponse {
     isRecord(v) &&
     typeof v.run_id === "number" &&
     typeof v.status === "string" &&
-    ("executed_step_id" in v)
+    "executed_step_id" in v
   );
 }
 
@@ -101,7 +99,7 @@ async function safeReadJson(res: Response): Promise<unknown> {
   try {
     return JSON.parse(text);
   } catch {
-    // backend devolvió texto/HTML en vez de JSON
+    // Backend returned text/HTML instead of JSON
     return { error: text };
   }
 }
@@ -120,7 +118,7 @@ function safeStringify(v: unknown): string {
 }
 
 function getScreenshotUrlFromLogData(data: unknown): string | null {
-  // data: { result: { screenshot_url: "/artifacts/..." } }
+  // Expected shape: { result: { screenshot_url: "/artifacts/..." } }
   if (!isRecord(data)) return null;
   const result = data.result;
   if (!isRecord(result)) return null;
@@ -129,17 +127,122 @@ function getScreenshotUrlFromLogData(data: unknown): string | null {
   return typeof url === "string" ? url : null;
 }
 
+async function downloadViaBlob(url: string, filename: string) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const blob = await res.blob();
+
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objUrl);
+}
+
+async function copyToClipboard(text: string) {
+  // Clipboard API works on localhost and secure contexts
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback (older browsers)
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function formatTs(ts: string): string {
+  // Keep it simple: show HH:MM:SS if ISO-like, else raw
+  const d = new Date(ts);
+  if (!Number.isNaN(d.getTime())) {
+    return d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+  return ts;
+}
+
 export default function Home() {
   const apiBase = useMemo(() => getApiBase(), []);
 
   const [task, setTask] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [runId, setRunId] = useState<number | null>(null);
 
-  const [createResult, setCreateResult] = useState<UiResult<ApiOkResponse> | null>(null);
-  const [stepResult, setStepResult] = useState<UiResult<ExecuteStepOkResponse> | null>(null);
-  const [runDetails, setRunDetails] = useState<UiResult<RunDetailsOkResponse> | null>(null);
+  const [createResult, setCreateResult] =
+    useState<UiResult<ApiOkResponse> | null>(null);
+  const [stepResult, setStepResult] =
+    useState<UiResult<ExecuteStepOkResponse> | null>(null);
+  const [runDetails, setRunDetails] =
+    useState<UiResult<RunDetailsOkResponse> | null>(null);
+
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  useEffect(() => {
+    let ticking = false;
+
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+
+      window.requestAnimationFrame(() => {
+        setShowScrollTop(window.scrollY > 320);
+        ticking = false;
+      });
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll(); // initialize
+
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const examples = useMemo(
+    () => [
+      {
+        label: "Login + screenshot",
+        value:
+          "Go to Form Authentication, login with tomsmith / SuperSecretPassword!, verify success text, then take a screenshot.",
+      },
+      {
+        label: "Navigate + verify",
+        value:
+          'Open https://example.com, verify the page title contains "Example Domain", then take a screenshot.',
+      },
+      {
+        label: "Fill form",
+        value:
+          "Go to a contact form page, fill name/email/message, verify submit button is enabled, then take a screenshot.",
+      },
+    ],
+    [],
+  );
+
+  function showToast(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 1800);
+  }
 
   async function createRun() {
     setLoading(true);
@@ -162,7 +265,9 @@ export default function Home() {
       }
 
       if (!isApiOkResponse(data)) {
-        setCreateResult({ error: "Respuesta inválida del API (faltan campos esperados)." });
+        setCreateResult({
+          error: "Invalid API response (missing expected fields).",
+        });
         return;
       }
 
@@ -176,11 +281,14 @@ export default function Home() {
     }
   }
 
-  async function refreshRun() {
+  async function refreshRun(opts?: { silent?: boolean }) {
     if (!runId) return;
 
-    setLoading(true);
-    setRunDetails(null);
+    if (opts?.silent) setRefreshing(true);
+    else {
+      setLoading(true);
+      setRunDetails(null);
+    }
 
     try {
       const res = await fetch(`${apiBase}/runs/${runId}`, { method: "GET" });
@@ -192,7 +300,9 @@ export default function Home() {
       }
 
       if (!isRunDetailsOkResponse(data)) {
-        setRunDetails({ error: "Respuesta inválida del API al leer el run." });
+        setRunDetails({
+          error: "Invalid API response when reading run details.",
+        });
         return;
       }
 
@@ -201,7 +311,8 @@ export default function Home() {
       const message = e instanceof Error ? e.message : String(e);
       setRunDetails({ error: message });
     } finally {
-      setLoading(false);
+      if (opts?.silent) setRefreshing(false);
+      else setLoading(false);
     }
   }
 
@@ -215,7 +326,6 @@ export default function Home() {
       const res = await fetch(`${apiBase}/runs/${runId}/execute-next-ui-step`, {
         method: "POST",
       });
-
       const data = await safeReadJson(res);
 
       if (!res.ok) {
@@ -224,13 +334,14 @@ export default function Home() {
       }
 
       if (!isExecuteStepOkResponse(data)) {
-        setStepResult({ error: "Respuesta inválida del API al ejecutar el step." });
+        setStepResult({
+          error: "Invalid API response when executing the next step.",
+        });
         return;
       }
 
       setStepResult(data);
-      // refresca logs automáticamente para que aparezca screenshot_url al momento
-      await refreshRun();
+      await refreshRun({ silent: true });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       setStepResult({ error: message });
@@ -245,7 +356,9 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${apiBase}/runs/${runId}/close-ui-session`, { method: "POST" });
+      const res = await fetch(`${apiBase}/runs/${runId}/close-ui-session`, {
+        method: "POST",
+      });
       const data = await safeReadJson(res);
 
       if (!res.ok) {
@@ -253,8 +366,7 @@ export default function Home() {
         return;
       }
 
-      // refresca estado por si acaso
-      await refreshRun();
+      await refreshRun({ silent: true });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       setStepResult({ error: message });
@@ -262,6 +374,27 @@ export default function Home() {
       setLoading(false);
     }
   }
+
+  function resetRun() {
+    setRunId(null);
+    setCreateResult(null);
+    setStepResult(null);
+    setRunDetails(null);
+    setAutoRefresh(false);
+  }
+
+  // Auto-refresh polling (silent)
+  useEffect(() => {
+    if (!autoRefresh || !runId) return;
+
+    const id = window.setInterval(() => {
+      refreshRun({ silent: true }).catch(() => {
+        // Ignore polling errors
+      });
+    }, 2000);
+
+    return () => window.clearInterval(id);
+  }, [autoRefresh, runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const screenshotLinks = useMemo(() => {
     if (!runDetails || "error" in runDetails) return [];
@@ -275,117 +408,405 @@ export default function Home() {
     return urls;
   }, [runDetails]);
 
+  const latestScreenshotPath =
+    screenshotLinks.length > 0
+      ? screenshotLinks[screenshotLinks.length - 1]
+      : null;
+
+  const latestScreenshotUrl = latestScreenshotPath
+    ? `${apiBase}${latestScreenshotPath}`
+    : null;
+
+  const canCreate = task.trim().length > 0 && !loading;
+  const canRunActions = !!runId && !loading;
+
+  const statusText = useMemo(() => {
+    if (!runId) return "No run";
+    if (runDetails && !("error" in runDetails))
+      return runDetails.run.status || "Unknown";
+    if (stepResult && !("error" in stepResult))
+      return stepResult.status || "Unknown";
+    return loading ? "Working..." : "Unknown";
+  }, [runId, runDetails, stepResult, loading]);
+
+  const humanLogs = useMemo(() => {
+    if (!runDetails || "error" in runDetails) return [];
+    // Show newest first, keep it readable
+    return [...runDetails.logs].reverse();
+  }, [runDetails]);
+
   return (
-    <main className="min-h-screen p-6 flex justify-center">
-      <div className="w-full max-w-3xl">
-        <h1 className="text-3xl font-bold">NovaFlow Ops</h1>
-        <p className="text-sm text-gray-600 mt-2">
-          Turn natural-language tasks into verified browser actions (Nova 2 + Embeddings + Playwright).
-        </p>
+    <main className="min-h-screen px-4 sm:px-6 lg:px-10 py-8 sm:py-10 flex justify-center">
+      <div className="w-full max-w-7xl space-y-6">
+        {/* Header (reduced height, same colors) */}
+        <header className="card-glass px-4 sm:px-6 py-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr_auto] items-center gap-4">
+            {/* Left: logo */}
+            <div className="flex items-center">
+              <Image
+                src="/novaflowops-logo-1400x400.png"
+                alt="NovaFlow Ops"
+                width={1600}
+                height={457}
+                priority
+                className="w-auto h-30 sm:h-25 md:h-40 opacity-95"
+              />
+            </div>
 
-        <p className="text-xs text-gray-500 mt-2">
-          API: <span className="font-mono">{apiBase}</span>
-        </p>
+            {/* Center: subtitle */}
+            <div className="text-center px-2">
+              <p className="text-sm sm:text-base md:text-lg muted leading-relaxed mx-auto max-w-[80ch] font-bold">
+                Turn natural language tasks into verified browser actions
+              </p>
+              <p className="text-sm sm:text-base md:text-lg muted leading-relaxed mx-auto max-w-[80ch] font-bold">
+                (Nova 2 Lite + Titan Embeddings + Playwright).
+              </p>
+            </div>
+          </div>
+        </header>
 
-        <label className="block text-sm font-medium mt-6">Task</label>
-        <textarea
-          className="w-full mt-2 border rounded-md p-3 focus:outline-none focus:ring-2"
-          rows={6}
-          value={task}
-          onChange={(e) => setTask(e.target.value)}
-          placeholder='Example: "Go to Form Authentication, login with tomsmith / SuperSecretPassword!, verify success text, then take a screenshot."'
-        />
+        {/* Two-column layout on desktop */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-w-0">
+          {/* Left: Task + actions */}
+          <section className="card-glass min-w-0">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold">Task</div>
+                <div className="text-xs muted mt-1">
+                  Use an example or write your own natural language instruction.
+                </div>
+              </div>
 
-        <div className="mt-3 flex gap-2 flex-wrap">
-          <button
-            onClick={createRun}
-            disabled={!task.trim() || loading}
-            className="px-4 py-2 rounded-md bg-black text-white disabled:opacity-50"
-          >
-            {loading ? "Working..." : "Create run"}
-          </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  className="btn3d btn3d-ghost text-xs px-3 py-2"
+                  type="button"
+                  onClick={() => setTask("")}
+                  disabled={loading}
+                >
+                  Clear
+                </button>
 
-          <button
-            onClick={executeNextStep}
-            disabled={!runId || loading}
-            className="px-4 py-2 rounded-md bg-indigo-600 text-white disabled:opacity-50"
-          >
-            Execute next UI step
-          </button>
+                <button
+                  className="btn3d btn3d-ghost text-xs px-3 py-2"
+                  type="button"
+                  onClick={() => {
+                    resetRun();
+                    showToast("Run reset");
+                  }}
+                  disabled={loading}
+                >
+                  New run
+                </button>
+              </div>
+            </div>
 
-          <button
-            onClick={refreshRun}
-            disabled={!runId || loading}
-            className="px-4 py-2 rounded-md bg-gray-200 text-gray-900 disabled:opacity-50"
-          >
-            Refresh logs
-          </button>
+            {/* Examples */}
+            <div className="mt-4 flex gap-2 flex-wrap">
+              {examples.map((ex) => (
+                <button
+                  key={ex.label}
+                  className="btn3d btn3d-ghost text-xs px-3 py-2"
+                  type="button"
+                  onClick={() => setTask(ex.value)}
+                  disabled={loading}
+                >
+                  {ex.label}
+                </button>
+              ))}
+            </div>
 
-          <button
-            onClick={closeUiSession}
-            disabled={!runId || loading}
-            className="px-4 py-2 rounded-md bg-gray-200 text-gray-900 disabled:opacity-50"
-          >
-            Close UI session
-          </button>
+            <textarea
+              className="input-pro mt-4"
+              rows={8}
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              placeholder='Example: "Go to Form Authentication, login with tomsmith / SuperSecretPassword!, verify success text, then take a screenshot."'
+            />
 
-          {runId && (
-            <span className="text-sm text-gray-700 self-center">
-              Run: <strong>{runId}</strong>
-            </span>
-          )}
+            <div className="mt-4 flex gap-3 flex-wrap items-center">
+              <button
+                onClick={createRun}
+                disabled={!canCreate}
+                className="btn3d btn3d-ghost"
+              >
+                {loading ? "Working..." : "Create run"}
+              </button>
+
+              <button
+                onClick={executeNextStep}
+                disabled={!canRunActions}
+                className="btn3d btn3d-primary"
+              >
+                Execute next UI step
+              </button>
+
+              <button
+                onClick={() => refreshRun()}
+                disabled={!runId || loading}
+                className="btn3d btn3d-ghost"
+              >
+                Refresh logs
+              </button>
+
+              <button
+                onClick={closeUiSession}
+                disabled={!canRunActions}
+                className="btn3d btn3d-danger"
+              >
+                Close UI session
+              </button>
+            </div>
+
+            {/* Debug JSON (kept, but separated) */}
+            {(createResult || stepResult) && (
+              <div className="mt-6 grid gap-4">
+                {createResult && (
+                  <div>
+                    <h2 className="text-sm font-semibold mb-2">
+                      Create run response
+                    </h2>
+                    <pre className="text-xs bg-black/10 p-3 rounded-md overflow-auto max-w-full whitespace-pre-wrap break-word">
+                      {safeStringify(createResult)}
+                    </pre>
+                  </div>
+                )}
+
+                {stepResult && (
+                  <div>
+                    <h2 className="text-sm font-semibold mb-2">
+                      Last step result
+                    </h2>
+                    <pre className="text-xs bg-black/10 p-3 rounded-md overflow-auto max-w-full whitespace-pre-wrap break-word">
+                      {safeStringify(stepResult)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Right: Status + artifacts + logs */}
+          <div className="space-y-6 min-w-0">
+            {/* Status card */}
+            <section className="card-glass">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Run status</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="muted" aria-hidden="true">
+                      ●
+                    </span>
+                    <span className="text-sm">{statusText}</span>
+                    {refreshing && (
+                      <span className="text-xs muted">(refreshing)</span>
+                    )}
+                  </div>
+
+                  {runId && (
+                    <div className="mt-2 text-xs muted">
+                      Run ID: <span className="font-mono">{runId}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <button
+                    className="btn3d btn3d-ghost text-xs px-3 py-2"
+                    type="button"
+                    onClick={async () => {
+                      if (!runId) return;
+                      const ok = await copyToClipboard(String(runId));
+                      showToast(ok ? "Run ID copied" : "Copy failed");
+                    }}
+                    disabled={!runId}
+                  >
+                    Copy Run ID
+                  </button>
+
+                  <button
+                    className="btn3d btn3d-ghost text-xs px-3 py-2"
+                    type="button"
+                    onClick={() => setAutoRefresh((v) => !v)}
+                    disabled={!runId}
+                  >
+                    {autoRefresh ? "Auto-refresh: ON" : "Auto-refresh: OFF"}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            {/* Artifacts card */}
+            <section className="card-glass">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Artifacts</div>
+                  <div className="text-xs muted mt-1">
+                    Screenshots will appear here when available.
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                {latestScreenshotUrl ? (
+                  <div className="artifacts">
+                    <div className="thumb">
+                      {/* Using <img> because this is a runtime backend URL (no Next remote image config required). */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={latestScreenshotUrl} alt="Latest screenshot" />
+                      <div>
+                        <div className="font-semibold">Latest screenshot</div>
+                        <div className="text-xs muted">
+                          {runId ? `screenshot-${runId}.png` : "screenshot.png"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 flex-wrap">
+                      <button
+                        className="btn3d btn3d-ghost"
+                        onClick={() =>
+                          window.open(
+                            latestScreenshotUrl,
+                            "_blank",
+                            "noopener,noreferrer",
+                          )
+                        }
+                        type="button"
+                      >
+                        Open
+                      </button>
+
+                      <button
+                        className="btn3d btn3d-primary"
+                        onClick={async () => {
+                          const name = runId
+                            ? `screenshot-${runId}.png`
+                            : "screenshot.png";
+                          await downloadViaBlob(latestScreenshotUrl, name);
+                        }}
+                        type="button"
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm muted">
+                    No screenshots yet. Execute UI steps and a preview will show
+                    up here.
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Logs card (human readable) */}
+            <section className="card-glass">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Logs</div>
+                  <div className="text-xs muted mt-1">
+                    Readable timeline (newest first).
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <button
+                    className="btn3d btn3d-ghost text-xs px-3 py-2"
+                    type="button"
+                    onClick={() => refreshRun({ silent: true })}
+                    disabled={!runId}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                {!runId ? (
+                  <div className="text-sm muted">Create a run to see logs.</div>
+                ) : runDetails && "error" in runDetails ? (
+                  <div className="text-sm">
+                    <div className="font-semibold">Error</div>
+                    <div className="muted mt-1">{runDetails.error}</div>
+                  </div>
+                ) : runDetails && !("error" in runDetails) ? (
+                  <div className="rounded-md bg-black/10 p-3 max-h-90 overflow-auto">
+                    {humanLogs.length === 0 ? (
+                      <div className="text-sm muted">No logs yet.</div>
+                    ) : (
+                      <ul className="space-y-2">
+                        {humanLogs.slice(0, 120).map((l, idx) => (
+                          <li key={`${l.ts}-${idx}`} className="text-xs">
+                            <div className="flex gap-2">
+                              <span className="muted w-19.5 shrink-0">
+                                {formatTs(l.ts)}
+                              </span>
+                              <span className="muted w-13.5 shrink-0">
+                                {l.level.toUpperCase()}
+                              </span>
+                              <span className="flex-1">{l.message}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm muted">Waiting for run details…</div>
+                )}
+              </div>
+
+              {/* Raw run details (optional) */}
+              {runDetails && (
+                <div className="mt-4">
+                  <details>
+                    <summary className="text-xs muted cursor-pointer">
+                      Show raw run details (JSON)
+                    </summary>
+                    <pre className="text-xs bg-black/10 p-3 rounded-md overflow-auto mt-2 break-word">
+                      {safeStringify(runDetails)}
+                    </pre>
+                  </details>
+                </div>
+              )}
+            </section>
+          </div>
         </div>
 
-        {screenshotLinks.length > 0 && (
-          <div className="mt-6">
-            <h2 className="text-sm font-semibold mb-2">Screenshots</h2>
-            <ul className="list-disc ml-5 text-sm">
-              {screenshotLinks.map((u) => (
-                <li key={u}>
-                  <a
-                    className="text-blue-600 underline"
-                    href={`${apiBase}${u}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {apiBase}
-                    {u}
-                  </a>
-                </li>
-              ))}
-            </ul>
+        {/* Small toast */}
+        {toast && (
+          <div className="fixed bottom-5 left-1/2 -translate-x-1/2">
+            <div className="badge">{toast}</div>
           </div>
         )}
 
-        {(createResult || stepResult || runDetails) && (
-          <div className="mt-6 grid gap-4">
-            {createResult && (
-              <div>
-                <h2 className="text-sm font-semibold mb-2">Create run response</h2>
-                <pre className="text-xs bg-gray-100 p-3 rounded-md overflow-auto">
-                  {safeStringify(createResult)}
-                </pre>
-              </div>
-            )}
-
-            {stepResult && (
-              <div>
-                <h2 className="text-sm font-semibold mb-2">Last step result</h2>
-                <pre className="text-xs bg-gray-100 p-3 rounded-md overflow-auto">
-                  {safeStringify(stepResult)}
-                </pre>
-              </div>
-            )}
-
-            {runDetails && (
-              <div>
-                <h2 className="text-sm font-semibold mb-2">Run details</h2>
-                <pre className="text-xs bg-gray-100 p-3 rounded-md overflow-auto">
-                  {safeStringify(runDetails)}
-                </pre>
-              </div>
-            )}
-          </div>
+        {/* Scroll-to-top CTA */}
+        {showScrollTop && (
+          <button
+            type="button"
+            className="btn3d btn3d-primary fixed bottom-6 right-6 z-50 rounded-full w-12 h-12 p-0 flex items-center justify-center"
+            aria-label="Scroll to top"
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          >
+            {/* Inline SVG icon */}
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 5L5 12M12 5L19 12M12 5V21"
+                stroke="white"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
         )}
       </div>
     </main>

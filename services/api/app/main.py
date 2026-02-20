@@ -2,8 +2,10 @@ import json
 import traceback
 import asyncio
 import re
+import ipaddress
+from urllib.parse import urlparse
 from datetime import datetime
-from typing import Optional, Set, Dict, Any
+from typing import Optional, Set, Dict
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,18 +25,18 @@ from .rag import top_k
 from .planner import PLANNER_SYSTEM, build_planner_user_prompt
 from .runner import run_one_step_stateful, close_session
 from .config import settings
+from .url_utils import sanitize_http_url
 
 app = FastAPI(title="NovaFlow Ops API", version="0.2.0")
 
 # --- Serve artifacts (screenshots, etc.) ---
-# runner.py writes files under: services/api/artifacts/...
 ARTIFACTS_DIR = Path(__file__).resolve().parents[1] / "artifacts"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/artifacts", StaticFiles(directory=str(ARTIFACTS_DIR)), name="artifacts")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.CORS_ORIGINS_LIST,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,14 +48,12 @@ _UI_EXECUTORS: Dict[int, ThreadPoolExecutor] = {}
 
 @app.on_event("startup")
 async def on_startup():
-    # Fail fast if config is incomplete
     settings.validate()
     await init_db()
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    # Best-effort cleanup of UI sessions/executors
     for run_id in list(_UI_EXECUTORS.keys()):
         try:
             close_session(run_id)
@@ -82,13 +82,6 @@ def _get_executor(run_id: int) -> ThreadPoolExecutor:
 
 
 async def _run_ui_in_executor(run_id: int, fn, *args, timeout_seconds: int = 90):
-    """
-    Run blocking Playwright sync code in a dedicated single-thread executor.
-
-    IMPORTANT:
-    Use asyncio.get_running_loop() (portable) instead of anyio.get_running_loop()
-    because older AnyIO versions do not expose get_running_loop().
-    """
     loop = asyncio.get_running_loop()
     ex = _get_executor(run_id)
 
@@ -97,13 +90,6 @@ async def _run_ui_in_executor(run_id: int, fn, *args, timeout_seconds: int = 90)
 
 
 def _strip_markdown_code_fences(text: str) -> str:
-    """
-    Remove common markdown code-fence wrappers like:
-      ```json
-      {...}
-      ```
-    This makes the planner output robust even if the model ignores instructions.
-    """
     s = (text or "").strip()
     s = re.sub(r"^\s*```(?:json|JSON)?\s*", "", s)
     s = re.sub(r"\s*```\s*$", "", s)
@@ -111,10 +97,6 @@ def _strip_markdown_code_fences(text: str) -> str:
 
 
 def _extract_json_object(text: str) -> str:
-    """
-    Extract the first JSON object substring by taking text from the first '{'
-    to the last '}'.
-    """
     s = (text or "").strip()
     start = s.find("{")
     end = s.rfind("}")
@@ -124,16 +106,6 @@ def _extract_json_object(text: str) -> str:
 
 
 def _parse_planner_json(plan_text: str) -> dict:
-    """
-    Parse planner output into a dict.
-
-    Strategy:
-    1) Try json.loads() directly
-    2) Strip markdown code fences, try again
-    3) Extract { ... } substring, try again
-
-    If all fail, raise a helpful error.
-    """
     raw = (plan_text or "").strip()
 
     try:
@@ -158,18 +130,120 @@ def _parse_planner_json(plan_text: str) -> dict:
             return obj
     except Exception as e:
         preview = raw[:500].replace("\n", "\\n")
-        raise HTTPException(
-            500,
-            f"Planner returned invalid JSON. Raw preview: {preview}",
-        ) from e
+        raise HTTPException(500, f"Planner returned invalid JSON. Raw preview: {preview}") from e
 
     raise HTTPException(500, "Planner returned JSON but not an object/dict.")
+
+
+# -----------------------------
+# Starting URL selection (FIX + SSRF hygiene)
+# -----------------------------
+def _is_blocked_host(host: str) -> bool:
+    """
+    Block localhost + private/loopback IPs.
+    NOTE: This does not DNS-resolve domains. It only blocks literal IP hosts + localhost.
+    """
+    h = (host or "").strip().lower()
+    if not h:
+        return True
+    if h == "localhost":
+        return True
+
+    try:
+        ip = ipaddress.ip_address(h)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+    except ValueError:
+        return False
+
+
+def _choose_starting_url(plan_starting_url: str | None) -> str:
+    """
+    Decide starting URL based on STARTING_URL_MODE:
+
+    - demo: always DEMO_STARTING_URL
+    - plan: allow plan's starting_url only if hostname is in ALLOWED_STARTING_HOSTS
+    - any_public: accept any http/https public host (still blocks localhost/private IPs)
+
+    Always returns a safe http/https URL (fallbacks if invalid).
+    """
+    mode = (settings.STARTING_URL_MODE or "demo").strip().lower()
+
+    demo_fallback = (
+        sanitize_http_url(settings.DEMO_STARTING_URL)
+        or "https://the-internet.herokuapp.com/"
+    )
+
+    if mode == "demo":
+        return demo_fallback
+
+    safe_plan_url = sanitize_http_url(plan_starting_url or "")
+    if not safe_plan_url:
+        return demo_fallback
+
+    host = (urlparse(safe_plan_url).hostname or "").lower()
+    if _is_blocked_host(host):
+        return demo_fallback
+
+    if mode == "any_public":
+        return safe_plan_url
+
+    if mode == "plan":
+        allowed = set(settings.ALLOWED_STARTING_HOSTS_LIST)
+        return safe_plan_url if host in allowed else demo_fallback
+
+    return demo_fallback
+
+
+# -----------------------------
+# Plan validation (prevents model nonsense)
+# -----------------------------
+_ALLOWED_DSL_PREFIXES = (
+    "CLICK_TEXT:",
+    "CLICK_ID:",
+    "CLICK_CSS:",
+    "TYPE_ID:",
+    "WAIT_TEXT:",
+    "ASSERT_TEXT:",
+    "WAIT_URL_CONTAINS:",
+    "WAIT_MS:",
+    "SCREENSHOT:",
+)
+
+
+def _validate_plan(plan: dict) -> None:
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise HTTPException(500, "Planner returned a plan without 'steps' list.")
+
+    for i, s in enumerate(steps, start=1):
+        if not isinstance(s, dict):
+            raise HTTPException(500, f"Planner step #{i} is not an object.")
+
+        stype = (s.get("type") or "").strip().lower()
+        if stype == "ui":
+            instr = (s.get("instruction") or "").strip()
+            if not instr:
+                raise HTTPException(500, f"Planner UI step #{i} has empty instruction.")
+            if not any(instr.upper().startswith(p) for p in _ALLOWED_DSL_PREFIXES):
+                raise HTTPException(
+                    500,
+                    f"Planner UI step #{i} instruction not in Runner DSL: '{instr}'"
+                )
+
+            if s.get("requires_approval") not in (False, None):
+                raise HTTPException(500, f"Planner UI step #{i} requires_approval must be false.")
+
+        elif stype in ("write", ""):
+            # write steps are allowed in schema, but runner ignores them.
+            # Keeping them won't break anything; they just won't be executed by /execute-next-ui-step.
+            pass
+        else:
+            raise HTTPException(500, f"Planner step #{i} has invalid type='{s.get('type')}'.")
 
 
 # ---------------------------
 # Schemas
 # ---------------------------
-
 class BrandDocIn(BaseModel):
     title: str
     content: str
@@ -190,17 +264,23 @@ class TaskIn(BaseModel):
 # ---------------------------
 # Routes
 # ---------------------------
-
 @app.get("/health")
 async def health():
+    effective_chat_model_id = (settings.NOVA_INFERENCE_PROFILE_ID or settings.NOVA_LITE_MODEL_ID)
     return {
         "ok": True,
         "provider": settings.NOVA_PROVIDER,
         "aws_region": settings.BEDROCK_REGION,
         "embed_model_id": settings.NOVA_EMBED_MODEL_ID,
         "lite_model_id": settings.NOVA_LITE_MODEL_ID,
+        "inference_profile_id": settings.NOVA_INFERENCE_PROFILE_ID,
+        "effective_chat_model_id": effective_chat_model_id,
         "db_configured": bool(settings.EFFECTIVE_DATABASE_URL),
         "artifacts_url": "/artifacts",
+        "starting_url_mode": settings.STARTING_URL_MODE,
+        "allowed_starting_hosts": settings.ALLOWED_STARTING_HOSTS_LIST,
+        "demo_starting_url": settings.DEMO_STARTING_URL,
+        "cors_origins": settings.CORS_ORIGINS_LIST,
     }
 
 
@@ -236,8 +316,13 @@ async def create_task(payload: TaskIn, session: AsyncSession = Depends(get_sessi
 
     user_prompt = build_planner_user_prompt(payload.task, ctx)
     plan_text = await anyio.to_thread.run_sync(nova_plan_with_lite, PLANNER_SYSTEM, user_prompt)
-
     plan = _parse_planner_json(plan_text)
+
+    # Normalize/sanitize starting_url once, store it in the plan
+    plan["starting_url"] = _choose_starting_url(plan.get("starting_url"))
+
+    # Validate steps so the runner won't crash on weird outputs
+    _validate_plan(plan)
 
     run = Run(
         task=payload.task,
@@ -264,9 +349,7 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
 
     logs = (
         await session.exec(
-            select(RunLog)
-            .where(RunLog.run_id == run_id)
-            .order_by(RunLog.ts)
+            select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.ts)
         )
     ).all()
 
@@ -301,7 +384,7 @@ def _executed_step_ids(logs: list[RunLog]) -> Set[str]:
 def _pick_next_ui_step(plan: dict, executed_ids: Set[str]) -> Optional[dict]:
     steps = plan.get("steps", [])
     for s in steps:
-        if s.get("type") == "ui" and s.get("id") not in executed_ids:
+        if (s.get("type") == "ui") and (s.get("id") not in executed_ids):
             return s
     return None
 
@@ -319,14 +402,12 @@ async def execute_next_ui_step(run_id: int, session: AsyncSession = Depends(get_
 
     plan = json.loads(run.plan_json)
 
-    # IMPORTANT: Always use DEMO_STARTING_URL from .env (do not trust model's starting_url).
-    starting_url = settings.DEMO_STARTING_URL
+    # Use plan.starting_url (already normalized), but re-apply safe fallback rules anyway
+    starting_url = _choose_starting_url(plan.get("starting_url"))
 
     logs = (
         await session.exec(
-            select(RunLog)
-            .where(RunLog.run_id == run_id)
-            .order_by(RunLog.ts)
+            select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.ts)
         )
     ).all()
 
@@ -340,9 +421,15 @@ async def execute_next_ui_step(run_id: int, session: AsyncSession = Depends(get_
         await session.commit()
         return {"run_id": run_id, "status": "DONE", "executed_step_id": None}
 
-    instruction = ui_step.get("instruction") or "CLICK_TEXT: Example"
+    instruction = (ui_step.get("instruction") or "").strip() or "CLICK_TEXT: Example"
     step_id = ui_step.get("id")
-    step_index = [s.get("id") for s in plan.get("steps", [])].index(step_id)
+
+    # safer than list.index()
+    step_index = -1
+    for idx, s in enumerate(plan.get("steps", [])):
+        if s.get("id") == step_id:
+            step_index = idx
+            break
 
     run.status = "RUNNING"
     run.updated_at = datetime.utcnow()
@@ -367,7 +454,13 @@ async def execute_next_ui_step(run_id: int, session: AsyncSession = Depends(get_
             timeout_seconds=90,
         )
 
-        add_log(session, run_id, "INFO", "UI step executed", {"step_index": step_index, "step_id": step_id, "result": result})
+        add_log(
+            session,
+            run_id,
+            "INFO",
+            "UI step executed",
+            {"step_index": step_index, "step_id": step_id, "result": result},
+        )
 
         remaining = _pick_next_ui_step(plan, executed_ids | {step_id})
         run.status = "DONE" if remaining is None else "PLANNED"
@@ -378,12 +471,7 @@ async def execute_next_ui_step(run_id: int, session: AsyncSession = Depends(get_
             run_id,
             "ERROR",
             "UI step failed",
-            {
-                "step_index": step_index,
-                "step_id": step_id,
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-            },
+            {"step_index": step_index, "step_id": step_id, "error": str(e), "traceback": traceback.format_exc()},
         )
         run.status = "ERROR"
 

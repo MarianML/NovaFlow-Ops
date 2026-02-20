@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 
 from .config import settings
+from .url_utils import sanitize_http_url
 
 # IMPORTANT: Playwright needs subprocess support on Windows.
 # Selector event loop policy breaks asyncio subprocess -> NotImplementedError.
@@ -27,6 +28,7 @@ class UISession:
     page: Page
     created_at: float
     last_used_at: float
+    starting_url: str
 
 
 # Keep UI sessions in-memory (per run_id). Good enough for demos/hackathons.
@@ -113,6 +115,20 @@ def _artifact_paths(run_id: int, label: str) -> tuple[Path, str]:
     return abs_path, public_url
 
 
+def _safe_starting_url(starting_url: str) -> str:
+    """
+    Double-candado:
+    - Sanitiza http/https
+    - Si es inválida, cae a DEMO_STARTING_URL
+    """
+    safe = sanitize_http_url(starting_url or "")
+    if safe:
+        return safe
+
+    demo = sanitize_http_url(settings.DEMO_STARTING_URL or "")
+    return demo or "https://the-internet.herokuapp.com/"
+
+
 def _get_or_create_session(run_id: int, starting_url: str) -> UISession:
     """
     Create a single persistent Playwright session per run_id.
@@ -120,16 +136,21 @@ def _get_or_create_session(run_id: int, starting_url: str) -> UISession:
     NOTE: Must be called from the SAME thread each time for a given run_id.
     FastAPI enforces this via a dedicated single-thread executor per run_id.
     """
+    safe_url = _safe_starting_url(starting_url)
+
     sess = _SESSIONS.get(run_id)
     if sess is not None:
         sess.last_used_at = time.time()
+        # Si por algún bug te pasan otra URL en el mismo run_id, NO re-navegamos a lo loco.
+        # Mantener estado > “sorpresa, te mandé a otra web”.
         return sess
 
     pw = sync_playwright().start()
     browser = pw.chromium.launch(headless=settings.PLAYWRIGHT_HEADLESS)
     context = browser.new_context()
     page = context.new_page()
-    page.goto(starting_url, wait_until="domcontentloaded", timeout=60000)
+
+    page.goto(safe_url, wait_until="domcontentloaded", timeout=60000)
 
     sess = UISession(
         playwright=pw,
@@ -138,6 +159,7 @@ def _get_or_create_session(run_id: int, starting_url: str) -> UISession:
         page=page,
         created_at=time.time(),
         last_used_at=time.time(),
+        starting_url=safe_url,
     )
     _SESSIONS[run_id] = sess
     return sess
@@ -169,7 +191,10 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
     Execute ONE UI step using a persistent session.
     Returns a small result payload for logging.
     """
-    sess = _get_or_create_session(run_id, starting_url)
+    # starting_url llega ya sanitizada desde main.py, pero aquí la volvemos a sanear por seguridad.
+    safe_url = _safe_starting_url(starting_url)
+
+    sess = _get_or_create_session(run_id, safe_url)
     page = sess.page
 
     spec = _parse_instruction(instruction)
@@ -210,7 +235,6 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
         locator.first.wait_for(state="visible", timeout=timeout_wait)
 
     elif action == "assert_text":
-        # ASSERT_TEXT should fail if not present. Give a short grace wait.
         target = spec["value"]
         locator = page.get_by_text(target, exact=False)
         try:
@@ -236,7 +260,7 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
             "ok": True,
             "runner": "playwright-local-stateful",
             "run_id": run_id,
-            "starting_url": starting_url,
+            "starting_url": sess.starting_url,
             "instruction": instruction,
             "parsed": spec,
             "final_url": page.url,
@@ -260,7 +284,7 @@ def run_one_step_stateful(run_id: int, starting_url: str, instruction: str) -> d
         "ok": True,
         "runner": "playwright-local-stateful",
         "run_id": run_id,
-        "starting_url": starting_url,
+        "starting_url": sess.starting_url,
         "instruction": instruction,
         "parsed": spec,
         "final_url": page.url,
