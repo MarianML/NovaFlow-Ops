@@ -178,6 +178,19 @@ function formatTs(ts: string): string {
   return ts;
 }
 
+function extractFirstHttpUrl(text: string): string | null {
+  const m = text.match(/https?:\/\/[^\s]+/i);
+  return m ? m[0] : null;
+}
+
+function safeHost(urlStr: string): string | null {
+  try {
+    return new URL(urlStr).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
   const apiBase = useMemo(() => getApiBase(), []);
 
@@ -199,6 +212,49 @@ export default function Home() {
 
   const [showScrollTop, setShowScrollTop] = useState(false);
 
+  // Read the demo starting URL from backend health (falls back to the known demo site)
+  const [demoUrl, setDemoUrl] = useState<string>(
+    "https://the-internet.herokuapp.com/",
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHealth() {
+      try {
+        const res = await fetch(`${apiBase}/health`, { cache: "no-store" });
+        if (!res.ok) return;
+
+        const data = await safeReadJson(res);
+
+        // Try a few common shapes without breaking if the backend changes slightly.
+        const u =
+          (isRecord(data) &&
+            typeof data.demo_starting_url === "string" &&
+            data.demo_starting_url) ||
+          (isRecord(data) &&
+            typeof data.demoStartingUrl === "string" &&
+            data.demoStartingUrl) ||
+          (isRecord(data) &&
+            isRecord(data.settings) &&
+            typeof data.settings.DEMO_STARTING_URL === "string" &&
+            data.settings.DEMO_STARTING_URL) ||
+          null;
+
+        if (!cancelled && typeof u === "string" && u.startsWith("http")) {
+          setDemoUrl(u);
+        }
+      } catch {
+        // Keep fallback demoUrl
+      }
+    }
+
+    loadHealth();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
   useEffect(() => {
     let ticking = false;
 
@@ -218,6 +274,7 @@ export default function Home() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Demo-safe examples: they must target the configured demo site.
   const examples = useMemo(
     () => [
       {
@@ -228,12 +285,12 @@ export default function Home() {
       {
         label: "Navigate + verify",
         value:
-          'Open https://example.com, verify the page title contains "Example Domain", then take a screenshot.',
+          "Go to A/B Testing, verify the page contains the text 'A/B Test', then take a screenshot.",
       },
       {
         label: "Fill form",
         value:
-          "Go to a contact form page, fill name/email/message, verify submit button is enabled, then take a screenshot.",
+          "Go to Form Authentication, fill the username and password fields, verify the Login button is visible, then take a screenshot.",
       },
     ],
     [],
@@ -435,6 +492,19 @@ export default function Home() {
     return [...runDetails.logs].reverse();
   }, [runDetails]);
 
+  // URL warning logic: if user mentions a URL that is NOT the configured demo host, warn them.
+  const typedUrl = useMemo(() => extractFirstHttpUrl(task), [task]);
+  const typedHost = useMemo(
+    () => (typedUrl ? safeHost(typedUrl) : null),
+    [typedUrl],
+  );
+  const demoHost = useMemo(() => safeHost(demoUrl), [demoUrl]);
+
+  const showUrlWarning = useMemo(() => {
+    if (!typedHost || !demoHost) return false;
+    return typedHost !== demoHost;
+  }, [typedHost, demoHost]);
+
   return (
     <main className="min-h-screen px-4 sm:px-6 lg:px-10 py-8 sm:py-10 flex justify-center">
       <div className="w-full max-w-7xl space-y-6">
@@ -524,6 +594,28 @@ export default function Home() {
               placeholder='Example: "Go to Form Authentication, login with tomsmith / SuperSecretPassword!, verify success text, then take a screenshot."'
             />
 
+            <p className="mt-2 text-xs text-slate-500">
+              Note: For demo stability, runs start from{" "}
+              <code className="px-1 py-0.5 rounded bg-slate-800/30">
+                DEMO_STARTING_URL
+              </code>
+              . Use tasks that target the configured demo site.
+            </p>
+
+            {showUrlWarning && (
+              <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                This demo runs against{" "}
+                <code className="px-1 py-0.5 rounded bg-black/30">
+                  {demoUrl}
+                </code>
+                . Your task mentions{" "}
+                <code className="px-1 py-0.5 rounded bg-black/30">
+                  {typedUrl}
+                </code>
+                , which may be ignored by the runner.
+              </div>
+            )}
+
             <div className="mt-4 flex gap-3 flex-wrap items-center">
               <button
                 onClick={createRun}
@@ -558,7 +650,7 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Debug JSON (kept, but separated) */}
+            {/* Debug JSON */}
             {(createResult || stepResult) && (
               <div className="mt-6 grid gap-4">
                 {createResult && (
@@ -651,7 +743,6 @@ export default function Home() {
                 {latestScreenshotUrl ? (
                   <div className="artifacts">
                     <div className="thumb">
-                      {/* Using <img> because this is a runtime backend URL (no Next remote image config required). */}
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={latestScreenshotUrl} alt="Latest screenshot" />
                       <div>
@@ -700,7 +791,7 @@ export default function Home() {
               </div>
             </section>
 
-            {/* Logs card (human readable) */}
+            {/* Logs card */}
             <section className="card-glass">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -757,7 +848,7 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Raw run details (optional) */}
+              {/* Raw run details */}
               {runDetails && (
                 <div className="mt-4">
                   <details>
@@ -774,14 +865,14 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Small toast */}
+        {/* Toast */}
         {toast && (
           <div className="fixed bottom-5 left-1/2 -translate-x-1/2">
             <div className="badge">{toast}</div>
           </div>
         )}
 
-        {/* Scroll-to-top CTA */}
+        {/* Scroll-to-top */}
         {showScrollTop && (
           <button
             type="button"
@@ -789,7 +880,6 @@ export default function Home() {
             aria-label="Scroll to top"
             onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           >
-            {/* Inline SVG icon */}
             <svg
               width="18"
               height="18"
