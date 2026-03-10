@@ -2,7 +2,7 @@
 
 NovaFlow Ops turns natural-language tasks into **verifiable browser actions**.
 
-It generates a short, deterministic execution plan (RAG + planner), executes each UI step using Playwright, and stores **auditable logs + evidence screenshots** so results are inspectable — not “trust me bro”.
+It generates a short, deterministic execution plan (RAG + planner), executes each UI step using Playwright, and stores **auditable logs + evidence screenshots** so results are inspectable.
 
 ---
 
